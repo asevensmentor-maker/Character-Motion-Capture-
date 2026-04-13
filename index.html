@@ -2,7 +2,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Interactive Avatar with MediaPipe & Three.js</title>
+    <title>Realistic Avatar - MediaPipe, Three.js & Cannon.js</title>
     <style>
         body {
             margin: 0;
@@ -11,21 +11,22 @@
             background: #000;
             color: #fff;
             text-align: center;
-        }#video {
+        }h2 {
         position: absolute;
         top: 10px;
+        width: 100%;
+        z-index: 5;
+        font-size: 18px;
+    }
+
+    #video {
+        position: absolute;
+        top: 60px;
         left: 10px;
-        width: 140px;
-        height: 105px;
+        width: 120px;
         border: 2px solid white;
         border-radius: 10px;
         z-index: 10;
-    }
-
-    #overlay {
-        position: absolute;
-        top: 0;
-        left: 0;
     }
 
     .controls {
@@ -37,191 +38,226 @@
     }
 
     button {
-        padding: 10px 20px;
+        padding: 12px 18px;
         margin: 5px;
         border: none;
-        border-radius: 8px;
-        background: #ff4081;
+        border-radius: 10px;
+        background: linear-gradient(45deg, #ff4081, #ff6f61);
         color: white;
         font-size: 16px;
         cursor: pointer;
     }
 
     button:hover {
-        background: #e91e63;
+        opacity: 0.9;
     }
 </style>
 
 </head>
-<body>
-    <h2>Interactive Avatar - MediaPipe & Three.js</h2><!-- Webcam Video -->
-<video id="video" autoplay playsinline></video>
-
-<!-- Controls -->
-<div class="controls">
+<body><h2>Realistic Interactive Avatar</h2>
+<video id="video" autoplay playsinline></video><div class="controls">
     <button onclick="throwBall()">Throw Ball</button>
     <button onclick="hitAvatar()">Hit Avatar</button>
-</div>
+</div><!-- Three.js --><script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script><script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/loaders/GLTFLoader.js"></script><!-- Cannon.js Physics --><script src="https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js"></script><!-- MediaPipe --><script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script><script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script><script>
+let scene, camera, renderer, avatar;
+let world, avatarBody;
+let balls = [];
+const videoElement = document.getElementById("video");
 
-<!-- Libraries -->
-<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+// Initialize Three.js
+function initThreeJS() {
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x000000);
 
-<script>
-    let scene, camera, renderer, avatar;
-    let balls = [];
-    const videoElement = document.getElementById("video");
+    camera = new THREE.PerspectiveCamera(
+        45,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        1000
+    );
+    camera.position.set(0, 1.5, 4);
 
-    // Initialize Three.js Scene
-    function initThreeJS() {
-        scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x111111);
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
 
-        camera = new THREE.PerspectiveCamera(
-            75,
-            window.innerWidth / window.innerHeight,
-            0.1,
-            1000
-        );
-        camera.position.z = 5;
+    // Lights
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambientLight);
 
-        renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        document.body.appendChild(renderer.domElement);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+    directionalLight.position.set(5, 10, 7);
+    directionalLight.castShadow = true;
+    scene.add(directionalLight);
 
-        // Light
-        const light = new THREE.DirectionalLight(0xffffff, 1);
-        light.position.set(0, 5, 5);
-        scene.add(light);
+    // Ground
+    const groundGeometry = new THREE.PlaneGeometry(10, 10);
+    const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x222222 });
+    const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    scene.add(ground);
 
-        const ambientLight = new THREE.AmbientLight(0x404040);
-        scene.add(ambientLight);
+    // Load GLB Avatar
+    const loader = new THREE.GLTFLoader();
+    loader.load(
+        "https://threejs.org/examples/models/gltf/RobotExpressive/RobotExpressive.glb",
+        function (gltf) {
+            avatar = gltf.scene;
+            avatar.scale.set(1.2, 1.2, 1.2);
+            avatar.position.set(0, 0, 0);
+            avatar.traverse(obj => {
+                if (obj.isMesh) obj.castShadow = true;
+            });
+            scene.add(avatar);
+        },
+        undefined,
+        function (error) {
+            console.error("Error loading GLB model:", error);
+        }
+    );
+}
 
-        // Avatar (Simple Robot)
-        const material = new THREE.MeshStandardMaterial({ color: 0x00ffcc });
+// Initialize Physics
+function initPhysics() {
+    world = new CANNON.World();
+    world.gravity.set(0, -9.82, 0);
 
-        const body = new THREE.Mesh(new THREE.BoxGeometry(1, 1.5, 0.5), material);
-        body.position.y = 0;
-        scene.add(body);
+    // Ground Physics
+    const groundBody = new CANNON.Body({ mass: 0 });
+    const groundShape = new CANNON.Plane();
+    groundBody.addShape(groundShape);
+    groundBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+    world.addBody(groundBody);
 
-        const head = new THREE.Mesh(new THREE.SphereGeometry(0.4, 32, 32), material);
-        head.position.y = 1.2;
-        scene.add(head);
+    // Avatar Physics
+    avatarBody = new CANNON.Body({
+        mass: 1,
+        shape: new CANNON.Box(new CANNON.Vec3(0.5, 1, 0.5)),
+        position: new CANNON.Vec3(0, 1, 0)
+    });
+    world.addBody(avatarBody);
+}
 
-        const leftArm = new THREE.Mesh(new THREE.BoxGeometry(0.3, 1, 0.3), material);
-        leftArm.position.set(-0.8, 0.3, 0);
-        scene.add(leftArm);
-
-        const rightArm = new THREE.Mesh(new THREE.BoxGeometry(0.3, 1, 0.3), material);
-        rightArm.position.set(0.8, 0.3, 0);
-        scene.add(rightArm);
-
-        avatar = {
-            body,
-            head,
-            leftArm,
-            rightArm
-        };
-    }
-
-    // Initialize MediaPipe Pose
-    function initMediaPipe() {
-        const pose = new Pose({
-            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
-        });
-
-        pose.setOptions({
-            modelComplexity: 1,
-            smoothLandmarks: true,
-            enableSegmentation: false,
-            minDetectionConfidence: 0.5,
-            minTrackingConfidence: 0.5
-        });
-
-        pose.onResults(onPoseResults);
-
-        const cameraUtils = new Camera(videoElement, {
-            onFrame: async () => {
-                await pose.send({ image: videoElement });
-            },
-            width: 640,
-            height: 480
-        });
-
-        cameraUtils.start();
-    }
-
-    // Map Pose to Avatar
-    function onPoseResults(results) {
-        if (!results.poseLandmarks) return;
-
-        const landmarks = results.poseLandmarks;
-
-        const leftShoulder = landmarks[11];
-        const rightShoulder = landmarks[12];
-        const leftWrist = landmarks[15];
-        const rightWrist = landmarks[16];
-
-        // Move Arms Based on Wrist Positions
-        avatar.leftArm.rotation.z = -(leftWrist.y - leftShoulder.y) * 5;
-        avatar.rightArm.rotation.z = -(rightWrist.y - rightShoulder.y) * 5;
-
-        // Move Body Side to Side
-        avatar.body.position.x = (leftShoulder.x - 0.5) * 4;
-        avatar.head.position.x = avatar.body.position.x;
-    }
-
-    // Throw Ball
-    function throwBall() {
-        const geometry = new THREE.SphereGeometry(0.15, 32, 32);
-        const material = new THREE.MeshStandardMaterial({ color: 0xff0000 });
-        const ball = new THREE.Mesh(geometry, material);
-
-        ball.position.set(0, 0, 2);
-        ball.velocity = new THREE.Vector3(0, 0, -0.2);
-        scene.add(ball);
-        balls.push(ball);
-    }
-
-    // Hit Avatar
-    function hitAvatar() {
-        avatar.body.material.color.set(0xff0000);
-        setTimeout(() => {
-            avatar.body.material.color.set(0x00ffcc);
-        }, 300);
-    }
-
-    // Animate Scene
-    function animate() {
-        requestAnimationFrame(animate);
-
-        balls.forEach((ball, index) => {
-            ball.position.add(ball.velocity);
-
-            // Collision Detection
-            if (ball.position.distanceTo(avatar.body.position) < 0.8) {
-                hitAvatar();
-                scene.remove(ball);
-                balls.splice(index, 1);
-            }
-        });
-
-        renderer.render(scene, camera);
-    }
-
-    // Handle Resize
-    window.addEventListener("resize", () => {
-        camera.aspect = window.innerWidth / window.innerHeight;
-        camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth, window.innerHeight);
+// Initialize MediaPipe Pose
+function initMediaPipe() {
+    const pose = new Pose({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
     });
 
-    // Start App
-    initThreeJS();
-    initMediaPipe();
-    animate();
-</script>
+    pose.setOptions({
+        modelComplexity: 1,
+        smoothLandmarks: true,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+    });
 
-</body>
-  </html>
+    pose.onResults(onPoseResults);
+
+    const cam = new Camera(videoElement, {
+        onFrame: async () => {
+            await pose.send({ image: videoElement });
+        },
+        width: 640,
+        height: 480
+    });
+
+    cam.start();
+}
+
+// Map Pose to Avatar
+function onPoseResults(results) {
+    if (!results.poseLandmarks || !avatar) return;
+
+    const leftShoulder = results.poseLandmarks[11];
+    const rightShoulder = results.poseLandmarks[12];
+
+    const centerX = (leftShoulder.x + rightShoulder.x) / 2;
+
+    // Move avatar horizontally
+    avatarBody.position.x = (centerX - 0.5) * 4;
+}
+
+// Throw Ball
+function throwBall() {
+    const radius = 0.15;
+
+    // Three.js Mesh
+    const geometry = new THREE.SphereGeometry(radius, 32, 32);
+    const material = new THREE.MeshStandardMaterial({ color: 0xff0000 });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.castShadow = true;
+    scene.add(mesh);
+
+    // Cannon.js Body
+    const shape = new CANNON.Sphere(radius);
+    const body = new CANNON.Body({ mass: 1, shape });
+    body.position.set(0, 1.5, 3);
+    body.velocity.set(0, 0, -8);
+    world.addBody(body);
+
+    balls.push({ mesh, body });
+}
+
+// Hit Avatar
+function hitAvatar() {
+    if (!avatar) return;
+    avatar.traverse(child => {
+        if (child.isMesh) {
+            child.material.emissive = new THREE.Color(0xff0000);
+        }
+    });
+
+    setTimeout(() => {
+        avatar.traverse(child => {
+            if (child.isMesh && child.material.emissive) {
+                child.material.emissive.set(0x000000);
+            }
+        });
+    }, 200);
+}
+
+// Animation Loop
+function animate() {
+    requestAnimationFrame(animate);
+
+    // Step physics
+    world.step(1 / 60);
+
+    // Sync avatar with physics
+    if (avatar) {
+        avatar.position.copy(avatarBody.position);
+    }
+
+    // Update balls
+    balls.forEach((ball, index) => {
+        ball.mesh.position.copy(ball.body.position);
+        ball.mesh.quaternion.copy(ball.body.quaternion);
+
+        // Collision detection
+        if (ball.body.position.distanceTo(avatarBody.position) < 1) {
+            hitAvatar();
+            world.removeBody(ball.body);
+            scene.remove(ball.mesh);
+            balls.splice(index, 1);
+        }
+    });
+
+    renderer.render(scene, camera);
+}
+
+// Resize Handler
+window.addEventListener("resize", () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// Initialize All
+initThreeJS();
+initPhysics();
+initMediaPipe();
+animate();
+</script></body>
+</html>
